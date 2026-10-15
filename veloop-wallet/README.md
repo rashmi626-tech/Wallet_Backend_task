@@ -52,23 +52,26 @@ cd ..\frontend
 npm install
 ```
 
-### 3. Configure a local MongoDB replica set
+### 3. Configure MongoDB
 
-Wallet balance mutations use MongoDB transactions. Use a MongoDB instance running locally as a replica set (a single-node replica set is sufficient for development); a standalone MongoDB server can serve health checks but cannot safely process credits, withdrawals, or administrative balance changes.
+Wallet balance mutations use MongoDB transactions. Use either MongoDB Atlas or a local MongoDB replica set; a standalone MongoDB server can serve health checks but cannot safely process credits, withdrawals, or administrative balance changes.
 
-For a local MongoDB installation, configure `mongod` with a replica-set name such as `rs0`, start it, then initialize it once with:
+For Atlas, create a development cluster, add a database user, and allow your current IP address in **Network Access**. In Atlas, choose **Connect → Drivers** and copy the Node.js connection string. For local MongoDB instead, configure `mongod` with a replica-set name such as `rs0`, start it, then initialize it once with:
 
 ```powershell
 mongosh --host 127.0.0.1:27017 --eval "rs.initiate()"
 ```
 
-Use a local URI that specifies the same replica-set name, for example:
+Do not run the initialization command against a shared database. Use the Atlas connection string as `MONGO_URI`, replacing the username, password, and database name, or use a local URI that specifies the same replica-set name, for example:
 
 ```text
+mongodb+srv://<db_username>:<db_password>@<cluster-name>.<id>.mongodb.net/veloop_wallet?retryWrites=true&w=majority&appName=veloop-wallet
+
+# Local replica-set alternative:
 mongodb://127.0.0.1:27017/veloop_wallet?replicaSet=rs0
 ```
 
-Do not run the initialization command against a shared or production database.
+If the database password contains reserved URI characters, URL-encode them before adding it to the connection string. Use a development cluster only; do not use production credentials or data.
 
 ### 4. Configure backend environment
 
@@ -78,7 +81,7 @@ From the project root, copy the template:
 Copy-Item backend/.env.example backend/.env
 ```
 
-Then set `MONGO_URI` to the local replica-set URI and replace the JWT secret with a unique random value of at least 32 characters. A local random secret can be generated with:
+Then set `MONGO_URI` to the Atlas or local replica-set URI and replace the JWT secret with a unique random value of at least 32 characters. A local random secret can be generated with:
 
 ```powershell
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
@@ -86,7 +89,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 Configure local administrator/demo passwords as needed. Keep `.env` untracked and never commit real credentials.
 
-The `DEFAULT_EMAIL`/`DEFAULT_PASSWORD` values are a local convenience for the demo sign-in flow. If the configured account does not exist, a successful sign-in with those values creates a local administrator account. These values must not be treated as production credentials.
+The `DEFAULT_EMAIL`/`DEFAULT_PASSWORD` values are a local convenience for the demo sign-in flow. If the configured account does not exist, a successful sign-in with those values creates a local administrator account. The app falls back to `admin@veloopwallet.com` / `Veloop@123` when those values are unset or left as placeholders, so the default local login still works without custom environment data. These values must not be treated as production credentials.
 
 ### 5. Run backend and frontend
 
@@ -109,7 +112,7 @@ The default URLs are:
 
 The frontend proxies `/api/*` requests to the backend, removing the `/api` prefix. Direct backend requests use routes such as `/auth/login` and `/wallet`.
 
-The health response reports whether MongoDB is connected, whether JWT authentication is configured, and whether transaction support is available. For wallet mutations, `database.transactionsSupported` must be `true`.
+The health response reports whether MongoDB is connected, whether JWT authentication is configured, and whether transaction support is available. For wallet mutations, `database.transactionsSupported` must be `true`; Atlas clusters support the required replica-set transactions.
 
 ## Authentication and API
 
@@ -123,6 +126,12 @@ Major routes include:
 | `POST` | `/auth/login` | Public | Sign in |
 | `GET` | `/auth/me` | User | Read the current account |
 | `GET` | `/wallet` | User | Read wallet and recent transactions |
+| `POST` | `/wallet/daily-streak/claim` | User | Claim the once-per-UTC-day streak reward |
+| `GET` | `/wallet/rewards` | User | List non-merchant demo rewards |
+| `GET` | `/wallet/integrations` | User | Read live provider availability |
+| `POST` | `/wallet/rewards/:rewardId/redeem` | User | Redeem a reward with VEs/spins |
+| `POST` | `/wallet/demo/payments` | User | Simulate incoming UPI/card funds in a separate demo balance |
+| `POST` | `/wallet/demo/withdrawals` | User | Simulate an outgoing demo payout |
 | `GET` | `/wallet/summary` | User | Read wallet summary |
 | `GET` | `/wallet/ledger` | User | Read the authenticated user's ledger |
 | `GET` | `/wallet/payout-options` | User | List active payout methods |
@@ -146,6 +155,9 @@ See [backend/API_DOCUMENTATION.md](./backend/API_DOCUMENTATION.md) for request/r
 
 - **User:** account identity, password hash, role, and verification flag.
 - **Wallet:** current USD-cent balance plus separate non-withdrawable reward counters.
+- **Demo wallet:** separate simulated balance and activity log for test UPI/card deposits, demo withdrawals, and non-merchant reward redemptions; it is not real or withdrawable money.
+- **Live providers:** Amazon AGCOD, a provider-neutral voucher issuer, Razorpay Checkout, and RazorpayX Payouts are disabled until approved accounts and server-side adapters are configured. INR operations remain disabled until INR wallet accounting is implemented. See `backend/API_DOCUMENTATION.md`.
+- **Daily streak:** UTC calendar-day check-ins; a missed day restarts the active streak, and rewards cycle weekly without affecting the USD balance.
 - **WalletTransaction:** user-facing activity and operation status.
 - **WalletLedger:** append-only signed balance movements, each recording the resulting balance.
 - **Withdrawal:** payout method, amount, status, reference, and review details.

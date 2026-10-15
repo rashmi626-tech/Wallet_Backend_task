@@ -2,6 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import './App.css'
 
 const API_URL = import.meta.env.VITE_API_URL || '/api'
+const DEFAULT_LOGIN_ACCOUNT = {
+  name: 'Veloop Admin',
+  email: 'admin@veloopwallet.com',
+  password: 'Veloop@123',
+}
 const WALLET_POLICY = {
   maxBalanceCents: 500_000,
   maxWithdrawalCents: 250_000,
@@ -50,6 +55,20 @@ const requestKeyFor = (ref, payload) => {
   return ref.current.key
 }
 
+const routeForPath = (path) => {
+  if (path.startsWith('/payout')) return 'payout'
+  if (path.startsWith('/collect')) return 'collect'
+  if (path.startsWith('/rewards')) return 'rewards'
+  if (path.startsWith('/overview')) return 'overview'
+  return 'dashboard'
+}
+
+const canSubmitAuthForm = (mode, form) => (
+  /^\S+@\S+\.\S+$/.test(form.email.trim())
+  && form.password.length >= 8
+  && (mode !== 'register' || form.name.trim().length >= 2)
+)
+
 function App() {
   const [status, setStatus] = useState('checking')
   const [databaseConnected, setDatabaseConnected] = useState(false)
@@ -62,19 +81,23 @@ function App() {
   const [ledgerEntries, setLedgerEntries] = useState([])
   const [payoutOptions, setPayoutOptions] = useState([])
   const [route, setRoute] = useState(() => {
-    if (typeof window === 'undefined') return 'wallet'
-    return window.location.pathname.startsWith('/payout') ? 'payout' : 'wallet'
+    if (typeof window === 'undefined') return 'dashboard'
+    return routeForPath(window.location.pathname)
   })
-  const [activeView, setActiveView] = useState('dashboard')
+  const [rewards, setRewards] = useState([])
+  const [integrations, setIntegrations] = useState(null)
   const [authMode, setAuthMode] = useState('login')
   const [notice, setNotice] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [claimingDailyReward, setClaimingDailyReward] = useState(false)
   const [authForm, setAuthForm] = useState({
-    name: 'Veloop Admin',
-    email: import.meta.env.VITE_DEFAULT_EMAIL || 'admin@veloopwallet.com',
-    password: import.meta.env.VITE_DEFAULT_PASSWORD || 'Veloop@123',
+    name: DEFAULT_LOGIN_ACCOUNT.name,
+    email: import.meta.env.VITE_DEFAULT_EMAIL || DEFAULT_LOGIN_ACCOUNT.email,
+    password: import.meta.env.VITE_DEFAULT_PASSWORD || DEFAULT_LOGIN_ACCOUNT.password,
   })
   const [collectionForm, setCollectionForm] = useState({ amount: '', note: '' })
+  const [demoPaymentForm, setDemoPaymentForm] = useState({ amount: '', method: 'upi' })
+  const [demoWithdrawalForm, setDemoWithdrawalForm] = useState({ amount: '', method: 'upi' })
   const [withdrawalForm, setWithdrawalForm] = useState({
     amount: (WALLET_POLICY.fixedPayoutAmountCents / 100).toFixed(2),
     method: 'bank_transfer',
@@ -82,6 +105,9 @@ function App() {
   })
   const collectionRequestKey = useRef(null)
   const withdrawalRequestKey = useRef(null)
+  const demoPaymentRequestKey = useRef(null)
+  const demoWithdrawalRequestKey = useRef(null)
+  const rewardRequestKeys = useRef({})
 
   useEffect(() => {
     let cancelled = false
@@ -105,7 +131,7 @@ function App() {
   useEffect(() => {
     const syncRoute = () => {
       const path = typeof window === 'undefined' ? '/wallet' : window.location.pathname
-      setRoute(path.startsWith('/payout') ? 'payout' : 'wallet')
+      setRoute(routeForPath(path))
     }
 
     syncRoute()
@@ -118,7 +144,7 @@ function App() {
     if (typeof window !== 'undefined' && window.location.pathname !== safePath) {
       window.history.pushState({}, '', safePath)
     }
-    setRoute(safePath.startsWith('/payout') ? 'payout' : 'wallet')
+    setRoute(routeForPath(safePath))
   }
 
   useEffect(() => {
@@ -127,11 +153,13 @@ function App() {
 
     const loadDashboard = async () => {
       try {
-        const [account, summary, options, ledger] = await Promise.all([
+        const [account, summary, options, ledger, rewardCatalog, integrationStatus] = await Promise.all([
           apiRequest('/auth/me', { token }),
           apiRequest('/wallet', { token }),
           apiRequest('/wallet/payout-options', { token }),
           apiRequest('/wallet/ledger?limit=10', { token }),
+          apiRequest('/wallet/rewards', { token }),
+          apiRequest('/wallet/integrations', { token }),
         ])
         if (cancelled) return
         setUser(account.user)
@@ -139,6 +167,8 @@ function App() {
         setTransactions(summary.transactions)
         setPayoutOptions(options.options)
         setLedgerEntries(ledger.entries)
+        setRewards(rewardCatalog.rewards)
+        setIntegrations(integrationStatus.integrations)
       } catch (error) {
         if (cancelled) return
         setNotice({ kind: 'error', text: error.message })
@@ -161,6 +191,102 @@ function App() {
     setWallet(summary.wallet)
     setTransactions(summary.transactions)
     setLedgerEntries(ledger.entries)
+  }
+
+  const claimDailyReward = async () => {
+    setClaimingDailyReward(true)
+    setNotice(null)
+    try {
+      const result = await apiRequest('/wallet/daily-streak/claim', { token, method: 'POST' })
+      setWallet(result.wallet)
+      const rewardText = [
+        result.reward.ves ? `${result.reward.ves} VEs` : null,
+        result.reward.spins ? `${result.reward.spins} ${result.reward.spins === 1 ? 'spin' : 'spins'}` : null,
+      ].filter(Boolean).join(' and ')
+      setNotice({ kind: 'success', text: `Day ${result.reward.streakDay} reward claimed: ${rewardText}.` })
+    } catch (error) {
+      setNotice({ kind: 'error', text: error.message })
+    } finally {
+      setClaimingDailyReward(false)
+    }
+  }
+
+  const submitDemoPayment = async (event) => {
+    event.preventDefault()
+    const payload = { amountCents: toCents(demoPaymentForm.amount), method: demoPaymentForm.method }
+    if (!payload.amountCents) {
+      setNotice({ kind: 'error', text: 'Enter a valid demo payment amount.' })
+      return
+    }
+    setLoading(true)
+    setNotice(null)
+    try {
+      const result = await apiRequest('/wallet/demo/payments', {
+        token,
+        method: 'POST',
+        headers: { 'Idempotency-Key': requestKeyFor(demoPaymentRequestKey, payload) },
+        body: JSON.stringify(payload),
+      })
+      setWallet(result.wallet)
+      setDemoPaymentForm({ ...demoPaymentForm, amount: '' })
+      demoPaymentRequestKey.current = null
+      setNotice({ kind: 'success', text: `${result.message} Demo balance: ${formatMoney(result.wallet.demoBalanceCents, result.wallet.currency)}.` })
+      await refreshWallet()
+    } catch (error) {
+      setNotice({ kind: 'error', text: error.message })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const submitDemoWithdrawal = async (event) => {
+    event.preventDefault()
+    const payload = { amountCents: toCents(demoWithdrawalForm.amount), method: demoWithdrawalForm.method }
+    if (!payload.amountCents) {
+      setNotice({ kind: 'error', text: 'Enter a valid demo withdrawal amount.' })
+      return
+    }
+    setLoading(true)
+    setNotice(null)
+    try {
+      const result = await apiRequest('/wallet/demo/withdrawals', {
+        token,
+        method: 'POST',
+        headers: { 'Idempotency-Key': requestKeyFor(demoWithdrawalRequestKey, payload) },
+        body: JSON.stringify(payload),
+      })
+      setWallet(result.wallet)
+      setDemoWithdrawalForm({ ...demoWithdrawalForm, amount: '' })
+      demoWithdrawalRequestKey.current = null
+      setNotice({ kind: 'success', text: `${result.message} Remaining demo balance: ${formatMoney(result.wallet.demoBalanceCents, result.wallet.currency)}.` })
+      await refreshWallet()
+    } catch (error) {
+      setNotice({ kind: 'error', text: error.message })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const redeemReward = async (reward) => {
+    setLoading(true)
+    setNotice(null)
+    try {
+      const keyRef = rewardRequestKeys.current[reward.id] || { current: null }
+      rewardRequestKeys.current[reward.id] = keyRef
+      const result = await apiRequest(`/wallet/rewards/${reward.id}/redeem`, {
+        token,
+        method: 'POST',
+        headers: { 'Idempotency-Key': requestKeyFor(keyRef, { rewardId: reward.id }) },
+      })
+      setWallet(result.wallet)
+      delete rewardRequestKeys.current[reward.id]
+      setNotice({ kind: 'success', text: `${result.message} Demo code: ${result.reward.demoCode}.` })
+      await refreshWallet()
+    } catch (error) {
+      setNotice({ kind: 'error', text: error.message })
+    } finally {
+      setLoading(false)
+    }
   }
 
   const submitAuth = async (event) => {
@@ -288,7 +414,13 @@ function App() {
     )
   }
 
-  const pageTitle = { wallet: 'Overview', payout: 'Payout', collect: 'Collect money', withdraw: 'Withdraw' }[route === 'payout' ? 'payout' : activeView === 'collect' ? 'collect' : activeView === 'withdraw' ? 'withdraw' : 'wallet']
+  const pageTitle = {
+    dashboard: 'Dashboard',
+    overview: 'Overview',
+    payout: 'Payout',
+    collect: 'Collect money',
+    rewards: 'Redeem rewards',
+  }[route]
 
   return (
     <div className="app-shell">
@@ -296,9 +428,11 @@ function App() {
         <Brand />
         <p className="nav-caption">Workspace</p>
         <nav className="main-nav" aria-label="Wallet sections">
-          <NavButton label="Wallet" value="wallet" active={route} onClick={() => { setActiveView('dashboard'); navigateTo('/wallet') }} />
-          <NavButton label="Payout" value="payout" active={route} onClick={() => { setActiveView('withdraw'); navigateTo('/payout') }} />
-          <NavButton label="Collect" value="collect" active={activeView} onClick={() => { setActiveView('collect'); navigateTo('/wallet') }} />
+          <NavButton label="Dashboard" value="dashboard" active={route} onClick={() => navigateTo('/wallet')} />
+          <NavButton label="Overview" value="overview" active={route} onClick={() => navigateTo('/overview')} />
+          <NavButton label="Payout" value="payout" active={route} onClick={() => navigateTo('/payout')} />
+          <NavButton label="Collect money" value="collect" active={route} onClick={() => navigateTo('/collect')} />
+          <NavButton label="Redeem rewards" value="rewards" active={route} onClick={() => navigateTo('/rewards')} />
         </nav>
         <div className="sidebar-bottom">
           <span className={`connection-indicator ${status}`} />
@@ -311,7 +445,7 @@ function App() {
         <header className="page-header">
           <div>
             <p className="eyebrow">VELoop Wallet / {pageTitle}</p>
-            <h1>{route === 'payout' ? 'Payout' : activeView === 'dashboard' ? `Good day, ${user.name.split(' ')[0]}` : pageTitle}</h1>
+            <h1>{route === 'dashboard' ? `Good day, ${user.name.split(' ')[0]}` : pageTitle}</h1>
           </div>
           <div className="header-account">
             <span className={`connection-indicator ${status}`} />
@@ -330,8 +464,11 @@ function App() {
             options={payoutOptions}
             wallet={wallet}
             transactionsSupported={transactionsSupported}
+            demoForm={demoWithdrawalForm}
+            setDemoForm={setDemoWithdrawalForm}
+            onDemoSubmit={submitDemoWithdrawal}
           />
-        ) : activeView === 'collect' ? (
+        ) : route === 'collect' ? (
           <CollectionView
             form={collectionForm}
             setForm={setCollectionForm}
@@ -339,21 +476,23 @@ function App() {
             loading={loading}
             transactions={transactions}
             currency={wallet.currency}
+            demoForm={demoPaymentForm}
+            setDemoForm={setDemoPaymentForm}
+            onDemoSubmit={submitDemoPayment}
+            demoBalanceCents={wallet.demoBalanceCents}
           />
+        ) : route === 'rewards' ? (
+          <RewardsView rewards={rewards} wallet={wallet} integrations={integrations} onRedeem={redeemReward} loading={loading} />
+        ) : route === 'overview' ? (
+          <OverviewView wallet={wallet} transactions={transactions} ledgerEntries={ledgerEntries} onNavigate={navigateTo} />
         ) : (
           <Dashboard
             wallet={wallet}
             transactions={transactions}
             ledgerEntries={ledgerEntries}
-            onNavigate={(next) => {
-              if (next === 'payout') {
-                setActiveView('withdraw')
-                navigateTo('/payout')
-                return
-              }
-              setActiveView(next)
-              navigateTo('/wallet')
-            }}
+            onClaimDailyReward={claimDailyReward}
+            claimingDailyReward={claimingDailyReward}
+            onNavigate={(next) => navigateTo(next === 'collect' ? '/collect' : next === 'rewards' ? '/rewards' : '/payout')}
           />
         )}
       </main>
@@ -412,7 +551,7 @@ function AuthScreen({ status, databaseConnected, authenticationConfigured, mode,
           {!databaseConnected && <p className="setup-note">Connect MongoDB in the backend environment before signing in.</p>}
           {databaseConnected && !authenticationConfigured && <p className="setup-note">Set a private JWT_SECRET of at least 32 characters in the backend environment before signing in.</p>}
           {notice && <p className={`form-notice ${notice.kind}`}>{notice.text}</p>}
-          <button className="primary-button" type="submit" disabled={loading || !databaseConnected || !authenticationConfigured}>
+          <button className="primary-button" type="submit" disabled={loading || !canSubmitAuthForm(mode, form)}>
             {loading ? 'Please wait…' : mode === 'login' ? 'Sign in to wallet' : 'Create wallet'}
           </button>
           <p className="auth-switch">
@@ -428,7 +567,7 @@ function AuthScreen({ status, databaseConnected, authenticationConfigured, mode,
   )
 }
 
-function Dashboard({ wallet, transactions, ledgerEntries, onNavigate }) {
+function Dashboard({ wallet, transactions, ledgerEntries, onClaimDailyReward, claimingDailyReward, onNavigate }) {
   const pendingCollections = transactions
     .filter((transaction) => transaction.type === 'collection' && transaction.status === 'pending')
     .reduce((sum, transaction) => sum + transaction.amountCents, 0)
@@ -443,6 +582,11 @@ function Dashboard({ wallet, transactions, ledgerEntries, onNavigate }) {
 
   return (
     <>
+      <DailyStreakCard
+        dailyStreak={wallet.dailyStreak}
+        onClaim={onClaimDailyReward}
+        loading={claimingDailyReward}
+      />
       <section className="balance-grid" aria-label="Wallet summary">
         <div className="balance-card">
           <div className="balance-card-top"><span>Available balance</span><span className="balance-symbol">USD</span></div>
@@ -451,6 +595,11 @@ function Dashboard({ wallet, transactions, ledgerEntries, onNavigate }) {
         </div>
         <Metric label="Open collections" value={formatMoney(pendingCollections, wallet.currency)} detail="Awaiting payment confirmation" tone="lime" />
         <Metric label="Payouts in progress" value={String(pendingWithdrawals).padStart(2, '0')} detail="Pending withdrawal requests" tone="coral" />
+      </section>
+
+      <section className="demo-balance-banner">
+        <div><p className="eyebrow">Demo-only funds</p><strong>{formatMoney(wallet.demoBalanceCents, wallet.currency)}</strong><span>Simulated balance · no real money</span></div>
+        <button className="text-button" onClick={() => onNavigate('collect')}>Add demo funds <span aria-hidden="true">→</span></button>
       </section>
 
       <section className="wallet-summary-grid" style={{ display: 'grid', gap: '1rem', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', marginTop: '1.5rem' }}>
@@ -484,6 +633,7 @@ function Dashboard({ wallet, transactions, ledgerEntries, onNavigate }) {
           <h2>What would you like to do?</h2>
           <button className="action-link collect-action" onClick={() => onNavigate('collect')}><span><strong>Collect a payment</strong><small>Create an incoming payment request</small></span><b aria-hidden="true">↗</b></button>
           <button className="action-link withdraw-action" onClick={() => onNavigate('payout')}><span><strong>Withdraw funds</strong><small>Send available balance to a payout method</small></span><b aria-hidden="true">↗</b></button>
+          <button className="action-link" onClick={() => onNavigate('rewards')}><span><strong>Redeem rewards</strong><small>Use VEs for demo vouchers and credits</small></span><b aria-hidden="true">↗</b></button>
           <p className="settlement-note">Collections are added to your available balance only after payment is confirmed.</p>
         </aside>
       </section>
@@ -491,16 +641,122 @@ function Dashboard({ wallet, transactions, ledgerEntries, onNavigate }) {
   )
 }
 
+function OverviewView({ wallet, transactions, ledgerEntries, onNavigate }) {
+  const recentActivity = (wallet.demoActivities || []).slice(0, 5)
+  return (
+    <div className="overview-page">
+      <section className="overview-cards" aria-label="Balances and rewards">
+        <Metric label="Withdrawable balance" value={formatMoney(wallet.balanceCents, wallet.currency)} detail="Real wallet balance" tone="lime" />
+        <Metric label="Demo balance" value={formatMoney(wallet.demoBalanceCents, wallet.currency)} detail="Simulated only · not cash" tone="coral" />
+        <Metric label="Reward coins" value={Number(wallet.ves || 0).toLocaleString()} detail="VEs available to redeem" tone="lime" />
+        <Metric label="Active streak" value={`${wallet.dailyStreak?.currentDays || 0} days`} detail={`${wallet.dailyStreak?.bestDays || 0} days best`} tone="coral" />
+      </section>
+      <section className="overview-lists">
+        <div className="quick-actions">
+          <p className="eyebrow">Demo wallet</p><h2>Recent simulated activity</h2>
+          {recentActivity.length ? recentActivity.map((activity) => (
+            <div className="request-row" key={activity.reference}>
+              <div><strong>{activity.description}</strong><small>{activity.reference} · {formatDate(activity.createdAt)}</small></div>
+              <strong>{activity.amountCents ? formatMoney(activity.amountCents, wallet.currency) : `${activity.vesSpent} VEs`}</strong>
+            </div>
+          )) : <p className="aside-empty">Demo payments, withdrawals, and reward claims will appear here.</p>}
+        </div>
+        <div className="quick-actions">
+          <p className="eyebrow">Wallet activity</p><h2>Latest balance movements</h2>
+          {ledgerEntries.length ? ledgerEntries.slice(0, 5).map((entry) => (
+            <div className="request-row" key={entry._id}>
+              <div><strong>{entry.description}</strong><small>{entry.reference} · {formatDate(entry.createdAt)}</small></div>
+              <strong>{entry.direction === 'debit' ? '−' : '+'}{formatMoney(entry.amountCents, wallet.currency)}</strong>
+            </div>
+          )) : <p className="aside-empty">{transactions.length ? 'No posted wallet movements yet.' : 'No real balance activity yet.'}</p>}
+          <div className="overview-actions">
+            <button className="text-button" onClick={() => onNavigate('/collect')}>Collect money</button>
+            <button className="text-button" onClick={() => onNavigate('/payout')}>Go to payout</button>
+            <button className="text-button" onClick={() => onNavigate('/rewards')}>Redeem a reward</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function DailyStreakCard({ dailyStreak, onClaim, loading }) {
+  const schedule = dailyStreak?.rewardSchedule || []
+  const nextReward = dailyStreak?.nextReward || { ves: 0, spins: 0 }
+  const completedDay = dailyStreak?.currentDays
+    ? ((dailyStreak.currentDays - 1) % 7) + 1
+    : 0
+  const rewardLabel = [
+    nextReward.ves ? `${nextReward.ves} VEs` : null,
+    nextReward.spins ? `${nextReward.spins} ${nextReward.spins === 1 ? 'spin' : 'spins'}` : null,
+  ].filter(Boolean).join(' + ')
+
+  return (
+    <section className="daily-streak-card" aria-labelledby="daily-streak-title">
+      <div className="daily-streak-header">
+        <div>
+          <p className="eyebrow">Daily rewards</p>
+          <h2 id="daily-streak-title">{dailyStreak?.currentDays || 0} day streak</h2>
+          <p className="daily-streak-copy">Check in once each UTC day. Miss a day and your active streak restarts.</p>
+        </div>
+        <div className="streak-best"><strong>{dailyStreak?.bestDays || 0}</strong><span>Best streak</span></div>
+      </div>
+      <div className="streak-reward-track" aria-label="Seven-day reward schedule">
+        {schedule.map((reward) => {
+          const isNext = dailyStreak?.canClaim && reward.cycleDay === nextReward.cycleDay
+          const isComplete = reward.cycleDay <= completedDay
+          return (
+            <div className={`streak-reward-day ${isComplete ? 'complete' : ''} ${isNext ? 'next' : ''}`} key={reward.cycleDay}>
+              <span>Day {reward.cycleDay}</span>
+              <strong>{reward.ves} VEs</strong>
+              {reward.spins > 0 && <small>+ {reward.spins} spin</small>}
+            </div>
+          )
+        })}
+      </div>
+      <div className="daily-streak-footer">
+        <span>{dailyStreak?.claimedToday ? `Come back tomorrow · next: ${rewardLabel}` : `Today's reward · ${rewardLabel}`}</span>
+        <button className="primary-button" type="button" disabled={!dailyStreak?.canClaim || loading} onClick={onClaim}>
+          {loading ? 'Claiming…' : dailyStreak?.claimedToday ? 'Claimed today' : 'Claim daily reward'}
+        </button>
+      </div>
+      <p className="daily-streak-note">Rewards are VEs and spins only; they never add to your withdrawable USD balance.</p>
+    </section>
+  )
+}
+
 function Metric({ label, value, detail, tone }) {
   return <div className={`metric-card ${tone}`}><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>
 }
 
-function CollectionView({ form, setForm, onSubmit, loading, transactions, currency }) {
+function CollectionView({ form, setForm, onSubmit, loading, transactions, currency, demoForm, setDemoForm, onDemoSubmit, demoBalanceCents }) {
   const recentCollections = transactions.filter((transaction) => transaction.type === 'collection').slice(0, 4)
 
   return (
     <section className="workflow-layout">
       <div className="workflow-main">
+        <div className="demo-payment-panel">
+          <p className="eyebrow">Incoming · simulated</p>
+          <h2>Add demo funds</h2>
+          <p className="section-copy">Preview an incoming UPI, card, or Razorpay payment. This is a simulation: no real payment is taken.</p>
+          <form className="workflow-form" onSubmit={onDemoSubmit}>
+            <label>Amount
+              <span className="money-input"><span>$</span><input type="number" inputMode="decimal" min="0.01" max="500" step="0.01" placeholder="0.00" required value={demoForm.amount} onChange={(event) => setDemoForm({ ...demoForm, amount: event.target.value })} /><small>USD</small></span>
+            </label>
+            <fieldset className="method-fieldset"><legend>Demo payment method</legend>
+              <div className="method-options">
+                {[['upi', 'UPI'], ['card', 'Card'], ['razorpay', 'Razorpay']].map(([value, label]) => (
+                  <label className={`method-option ${demoForm.method === value ? 'selected' : ''}`} key={value}>
+                    <input type="radio" name="demo-payment-method" value={value} checked={demoForm.method === value} onChange={() => setDemoForm({ ...demoForm, method: value })} />
+                    <span><strong>{label}</strong><small>Demo only — no details collected</small></span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <button className="primary-button" type="submit" disabled={loading}>{loading ? 'Simulating…' : 'Simulate incoming payment'}</button>
+          </form>
+          <div className="demo-current-balance">Demo balance: <strong>{formatMoney(demoBalanceCents, currency)}</strong></div>
+        </div>
         <div className="section-heading"><div><p className="eyebrow">Incoming payments</p><h2>Create a collection</h2><p className="section-copy">Set an amount and reference for a payment you expect to receive.</p></div></div>
         <form className="workflow-form" onSubmit={onSubmit}>
           <label>Amount
@@ -522,11 +778,33 @@ function CollectionView({ form, setForm, onSubmit, loading, transactions, curren
   )
 }
 
-function WithdrawalView({ form, setForm, onSubmit, loading, options, wallet, transactionsSupported }) {
+function WithdrawalView({ form, setForm, onSubmit, loading, options, wallet, transactionsSupported, demoForm, setDemoForm, onDemoSubmit }) {
   return (
     <section className="workflow-layout">
       <div className="workflow-main">
         <div className="section-heading"><div><p className="eyebrow">Payout</p><h2>Withdraw funds</h2><p className="section-copy">Choose where to send your available balance.</p></div></div>
+        <div className="demo-payment-panel">
+          <p className="eyebrow">Demo payout · simulated</p>
+          <h2>Withdraw demo funds</h2>
+          <p className="section-copy">Try an outgoing UPI, Razorpay, or bank transfer using simulated funds only.</p>
+          <div className="available-line"><span>Demo balance · not real money</span><strong>{formatMoney(wallet.demoBalanceCents, wallet.currency)}</strong></div>
+          <form className="workflow-form" onSubmit={onDemoSubmit}>
+            <label>Amount
+              <span className="money-input"><span>$</span><input type="number" inputMode="decimal" min="0.01" max="500" step="0.01" placeholder="0.00" required value={demoForm.amount} onChange={(event) => setDemoForm({ ...demoForm, amount: event.target.value })} /><small>{wallet.currency}</small></span>
+            </label>
+            <fieldset className="method-fieldset"><legend>Demo payout method</legend>
+              <div className="method-options">
+                {[['upi', 'UPI'], ['razorpay', 'Razorpay'], ['bank_transfer', 'Bank transfer']].map(([value, label]) => (
+                  <label className={`method-option ${demoForm.method === value ? 'selected' : ''}`} key={value}>
+                    <input type="radio" name="demo-withdrawal-method" value={value} checked={demoForm.method === value} onChange={() => setDemoForm({ ...demoForm, method: value })} />
+                    <span><strong>{label}</strong><small>No payment destination needed in demo mode</small></span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <button className="primary-button" type="submit" disabled={loading || wallet.demoBalanceCents <= 0}>{loading ? 'Simulating…' : 'Simulate outgoing payment'}</button>
+          </form>
+        </div>
         <div className="available-line"><span>Available to withdraw</span><strong>{formatMoney(wallet.balanceCents, wallet.currency)}</strong></div>
         <div className="inline-info"><span>i</span><p>Wallet cap: {formatMoney(WALLET_POLICY.maxBalanceCents, wallet.currency)} · Max single withdrawal: {formatMoney(WALLET_POLICY.maxWithdrawalCents, wallet.currency)} · Fixed payout amount: {formatMoney(WALLET_POLICY.fixedPayoutAmountCents, wallet.currency)}</p></div>
         <form className="workflow-form" onSubmit={onSubmit}>
@@ -551,6 +829,55 @@ function WithdrawalView({ form, setForm, onSubmit, loading, options, wallet, tra
         <ul><li>Wallet cap: {formatMoney(WALLET_POLICY.maxBalanceCents, wallet.currency)}.</li><li>Single withdrawals are capped at {formatMoney(WALLET_POLICY.maxWithdrawalCents, wallet.currency)}.</li><li>Reserved funds leave the available balance immediately.</li></ul>
         <div className="aside-balance"><span>Available balance</span><strong>{formatMoney(wallet.balanceCents, wallet.currency)}</strong></div>
       </aside>
+    </section>
+  )
+}
+
+function RewardsView({ rewards, wallet, integrations, onRedeem, loading }) {
+  const liveProviders = [
+    ['Amazon gift cards', integrations?.amazonGiftCards],
+    ['Merchant vouchers', integrations?.merchantVouchers],
+    ['Razorpay Checkout', integrations?.razorpayCheckout],
+    ['RazorpayX payouts', integrations?.razorpayPayouts],
+  ]
+
+  return (
+    <section className="rewards-page">
+      <div className="rewards-intro">
+        <div><p className="eyebrow">Rewards marketplace</p><h2>Choose a reward</h2><p className="section-copy">Spend VEs or spins on bonus coins and simulated wallet credit. Live merchant rewards are listed separately by availability.</p></div>
+        <div className="reward-balance"><strong>{Number(wallet.ves || 0).toLocaleString()}</strong><span>VEs · {wallet.spins || 0} spins</span></div>
+      </div>
+      <section className="integration-panel" aria-label="Live provider availability">
+        <div className="integration-panel-heading"><div><p className="eyebrow">Live fulfillment</p><h3>Provider connections</h3></div><span>{integrations?.currency?.code || 'USD'} wallet · INR unavailable</span></div>
+        <div className="integration-capabilities">
+          {liveProviders.map(([label, provider]) => (
+            <article className="integration-capability" key={label}>
+              <div><strong>{label}</strong><span>{provider?.provider || 'Provider not selected'}</span></div>
+              <span className={provider?.enabled ? 'capability-status is-enabled' : 'capability-status'}>{provider?.enabled ? 'Available' : 'Unavailable'}</span>
+              <p>{provider?.reason || 'Provider integration is not enabled.'}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+      <div className="demo-mode-banner"><strong>DEMO CATALOG</strong><span>No merchant voucher is valid and no real money or discount is issued.</span></div>
+      <div className="reward-grid">
+        {rewards.map((reward) => {
+          const canAfford = Number(wallet.ves || 0) >= reward.costVes && Number(wallet.spins || 0) >= (reward.costSpins || 0)
+          const price = [
+            reward.costVes ? `${reward.costVes.toLocaleString()} VEs` : null,
+            reward.costSpins ? `${reward.costSpins} ${reward.costSpins === 1 ? 'spin' : 'spins'}` : null,
+          ].filter(Boolean).join(' + ') || 'Free'
+          return (
+            <article className="reward-card" key={reward.id}>
+              <span className="reward-category">{reward.category}</span>
+              <h3>{reward.title}</h3>
+              <p>{reward.description}</p>
+              <strong className="reward-value">{reward.valueLabel}</strong>
+              <div className="reward-card-footer"><span>{price}</span><button className="primary-button" type="button" disabled={loading || !canAfford} onClick={() => onRedeem(reward)}>{loading ? 'Please wait…' : canAfford ? 'Claim demo reward' : 'Not enough rewards'}</button></div>
+            </article>
+          )
+        })}
+      </div>
     </section>
   )
 }
