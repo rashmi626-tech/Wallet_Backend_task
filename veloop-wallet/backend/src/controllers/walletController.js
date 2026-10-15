@@ -2,9 +2,6 @@ const mongoose = require("mongoose");
 const Wallet = require("../models/Wallet");
 const WalletTransaction = require("../models/WalletTransaction");
 const walletService = require("../services/walletService");
-const dailyStreakService = require("../services/dailyStreakService");
-const demoWalletService = require("../services/demoWalletService");
-const merchantIntegrations = require("../services/merchantIntegrations").merchantIntegrations;
 const {
 	MAX_WALLET_BALANCE_CENTS,
 	MAX_WITHDRAWAL_AMOUNT_CENTS,
@@ -28,59 +25,8 @@ const serializeWallet = (wallet) => ({
 	sves: wallet?.sves ?? 0,
 	gems: wallet?.gems ?? 0,
 	tokens: wallet?.tokens ?? 0,
-	spins: wallet?.spins ?? 0,
-	dailyStreak: dailyStreakService.getDailyStreakStatus(wallet?.dailyStreak),
-	demoBalanceCents: wallet?.demoBalanceCents ?? 0,
-	demoActivities: (wallet?.demoActivities || []).slice(-10).reverse()
+	spins: wallet?.spins ?? 0
 });
-
-const claimDailyStreak = async (req, res) => {
-	const result = await dailyStreakService.claimDailyReward({ userId: req.user._id });
-	return res.json({
-		message: "Daily reward claimed.",
-		reward: result.reward,
-		wallet: serializeWallet(result.wallet)
-	});
-};
-
-const addDemoFunds = async (req, res) => {
-	const { amountCents, method } = req.body || {};
-	const wallet = await demoWalletService.addDemoFunds({
-		userId: req.user._id,
-		amountCents,
-		method,
-		idempotencyKey: readIdempotencyKey(req)
-	});
-	return res.status(201).json({ message: "Demo payment simulated; demo funds were added.", wallet: serializeWallet(wallet) });
-};
-
-const withdrawDemoFunds = async (req, res) => {
-	const { amountCents, method } = req.body || {};
-	const wallet = await demoWalletService.withdrawDemoFunds({
-		userId: req.user._id,
-		amountCents,
-		method,
-		idempotencyKey: readIdempotencyKey(req)
-	});
-	return res.status(201).json({ message: "Demo withdrawal simulated; no real funds were sent.", wallet: serializeWallet(wallet) });
-};
-
-const getDemoRewards = (req, res) => res.json({ rewards: demoWalletService.getRewards() });
-
-const getIntegrationCapabilities = (req, res) => res.json({ integrations: merchantIntegrations.getCapabilities() });
-
-const redeemDemoReward = async (req, res) => {
-	const result = await demoWalletService.redeemReward({
-		userId: req.user._id,
-		rewardId: req.params.rewardId,
-		idempotencyKey: readIdempotencyKey(req)
-	});
-	return res.json({
-		message: "Demo reward redeemed. This voucher is not valid with a merchant.",
-		reward: { id: result.reward.id, title: result.reward.title, demoCode: result.activity.reference },
-		wallet: serializeWallet(result.wallet)
-	});
-};
 
 const getWallet = async (req, res) => {
 	const wallet = await Wallet.findOne({ userId: req.user._id });
@@ -190,12 +136,6 @@ const getLedger = async (req, res) => {
 
 module.exports = {
 	getWallet,
-	claimDailyStreak,
-	addDemoFunds,
-	withdrawDemoFunds,
-	getDemoRewards,
-	getIntegrationCapabilities,
-	redeemDemoReward,
 	getWalletSummary,
 	getPayoutOptions,
 	createCollection,

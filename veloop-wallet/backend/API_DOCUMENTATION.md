@@ -124,8 +124,6 @@ curl -X POST http://localhost:5000/auth/login \
 
 **Request:** No body.
 
-The response's `wallet` object includes the daily streak status, upcoming reward, and seven-day reward schedule described below.
-
 **Response (`200`):**
 
 ```json
@@ -165,7 +163,7 @@ curl http://localhost:5000/auth/me \
 
 **Request:** No body.
 
-**Response (`200`):** A `wallet` object (`currency`, `balanceCents`, `ves`, `sves`, `gems`, `tokens`, `spins`, `dailyStreak`, `demoBalanceCents`, `demoActivities`) and up to 10 most recent transaction summaries in `transactions`. `dailyStreak` contains the current and best consecutive-day counts, whether today's UTC reward is claimed, the upcoming reward, and the seven-day reward schedule. `demoBalanceCents` and `demoActivities` relate only to simulated flows and are not real funds or part of the USD ledger.
+**Response (`200`):** A `wallet` object (`currency`, `balanceCents`, `ves`, `sves`, `gems`, `tokens`, `spins`) and up to 10 most recent transaction summaries in `transactions`.
 
 ```json
 {
@@ -176,24 +174,7 @@ curl http://localhost:5000/auth/me \
     "sves": 0,
     "gems": 0,
     "tokens": 0,
-    "spins": 0,
-    "dailyStreak": {
-      "currentDays": 0,
-      "bestDays": 0,
-      "lastClaimDate": null,
-      "claimedToday": false,
-      "canClaim": true,
-      "nextReward": { "streakDay": 1, "cycleDay": 1, "ves": 50, "spins": 0 },
-      "rewardSchedule": [
-        { "cycleDay": 1, "ves": 50, "spins": 0 },
-        { "cycleDay": 2, "ves": 75, "spins": 0 },
-        { "cycleDay": 3, "ves": 100, "spins": 0 },
-        { "cycleDay": 4, "ves": 125, "spins": 0 },
-        { "cycleDay": 5, "ves": 150, "spins": 0 },
-        { "cycleDay": 6, "ves": 200, "spins": 0 },
-        { "cycleDay": 7, "ves": 300, "spins": 1 }
-      ]
-    }
+    "spins": 0
   },
   "transactions": [
     {
@@ -226,7 +207,7 @@ curl http://localhost:5000/wallet \
 
 **Request:** No body.
 
-**Response (`200`):** `success`, wallet balances (including the daily streak status and reward schedule), `summary.totalTransactions`, `summary.pendingTransactions`, and up to five `recentTransactions`.
+**Response (`200`):** `success`, wallet balances, `summary.totalTransactions`, `summary.pendingTransactions`, and up to five `recentTransactions`.
 
 **Errors:** `401` authentication required; `404` wallet not found; `503` database unavailable.
 
@@ -236,48 +217,6 @@ curl http://localhost:5000/wallet \
 curl http://localhost:5000/wallet/summary \
   -H "Authorization: Bearer <jwt>"
 ```
-
-### Claim daily streak reward
-
-**Endpoint:** `/api/wallet/daily-streak/claim`
-
-**Method:** `POST`
-
-**Authentication:** User
-
-**Request:** No body. Each UTC calendar day may be claimed once. The consecutive-day count advances if the prior claim was yesterday and restarts at day 1 after a missed day. Reward tiers repeat every seven days: 50, 75, 100, 125, 150, 200, then 300 VEs plus one spin. Rewards are non-cash and do not change the USD balance.
-
-**Response (`200`):** `message`, the claimed `reward` (`streakDay`, `cycleDay`, `ves`, `spins`), and the updated serialized `wallet`.
-
-**Errors:** `401` authentication required; `404` wallet not found; `409` today's reward has already been claimed.
-
-```bash
-curl -X POST http://localhost:5000/wallet/daily-streak/claim \
-  -H "Authorization: ******"
-```
-
-### Demo payments and rewards
-
-These authenticated endpoints power the responsive demo wallet only. Demo payments use a separate `demoBalanceCents`; they do not touch `balanceCents` or the real wallet ledger. UPI/card/Razorpay and payout actions are simulated. The demo reward catalog contains only bonus coins and simulated wallet credit; it does not generate merchant voucher codes.
-
-| Method | Endpoint | Purpose |
-| --- | --- | --- |
-| `GET` | `/api/wallet/rewards` | List demo coins and simulated wallet credit |
-| `POST` | `/api/wallet/rewards/:rewardId/redeem` | Redeem a catalog item using VEs/spins |
-| `POST` | `/api/wallet/demo/payments` | Simulate incoming UPI/card funds into the demo balance |
-| `POST` | `/api/wallet/demo/withdrawals` | Simulate outgoing UPI/bank transfer from the demo balance |
-
-All `POST` requests require an `Idempotency-Key`. Demo payment JSON is `{ "amountCents": 2500, "method": "upi" }`; allowed methods are `upi`, `card`, and `razorpay`. Demo withdrawal JSON is `{ "amountCents": 2500, "method": "razorpay" }`; allowed methods are `upi`, `razorpay`, and `bank_transfer`. Razorpay is a display/simulation option only; no Razorpay checkout, API request, or settlement occurs. Amounts must be positive integer cents, at most `$500.00` per demo request. Demo withdrawals also require sufficient demo balance. Responses return an updated wallet and an explicit simulation message. Reward redemption returns a generated `demoCode`, which is not a merchant voucher or payment credential.
-
-**Errors:** `400` invalid amount, method, or idempotency key; `401` authentication required; `404` unknown reward or wallet; `409` duplicate request, insufficient rewards/balance, or demo-balance limit reached.
-
-### Live integration availability
-
-`GET /api/wallet/integrations` (authenticated) reports provider readiness without exposing credentials. The server includes injectable provider interfaces for Amazon AGCOD gift-card issuance, a provider-neutral voucher issuer, Razorpay Checkout, and RazorpayX Payouts. No live provider adapter is configured in this release, so live issuance and payments are unavailable. Provider actions must reject with `503` until the approved provider adapter and required configuration are installed; the Razorpay paths also remain blocked until INR/paise wallet accounting is implemented.
-
-All integration switches in `backend/.env.example` default to `false`. A switch alone does not activate a provider: the matching server-side adapter is also required. Amazon AGCOD additionally requires approved partner access and prefunding. Voucher fulfillment requires selecting and onboarding an eligible issuer. Razorpay Checkout and RazorpayX Payouts are separate services and require their respective account approvals. Do not place provider secrets in frontend configuration or source control.
-
-The wallet currently records USD cents only. `INR_WALLET_ENABLED` cannot activate INR operations because INR wallet accounting is not implemented. Do not enable real INR collections or payouts until an INR balance model and migration/accounting policy are designed and implemented.
 
 ### Read ledger
 
@@ -751,7 +690,7 @@ For demonstration data, configure `DEMO_USER_PASSWORD` and run `npm run seed:dem
 
 ## Environment variables
 
-Copy the safe template in `.env.example` to a local `.env` and set `MONGO_URI` to the connection string from Atlas (**Connect → Drivers**) or a local replica set. For Atlas, create a database user and allow the development machine's IP in Network Access. URL-encode reserved characters in the database user's password before placing it in the URI. Start the backend and check `/health`; `database.connected` and `database.transactionsSupported` should both be `true`. **Never commit `.env`, real database credentials, JWT signing keys, webhook secrets, or production credentials.** The repository ignores `.env`; commit only the placeholder template.
+Copy the safe template in `.env.example` to a local `.env` and replace placeholders locally. **Never commit `.env`, real database credentials, JWT signing keys, webhook secrets, or production credentials.** The repository ignores `.env`; commit only the placeholder template.
 
 | Variable | Required | Description |
 | --- | --- | --- |

@@ -2,7 +2,6 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const User = require("../models/User");
 const Wallet = require("../models/Wallet");
-const { getDailyStreakStatus } = require("../services/dailyStreakService");
 
 const serializeWallet = (wallet) => ({
 	currency: wallet?.currency || "USD",
@@ -11,10 +10,7 @@ const serializeWallet = (wallet) => ({
 	sves: wallet?.sves ?? 0,
 	gems: wallet?.gems ?? 0,
 	tokens: wallet?.tokens ?? 0,
-	spins: wallet?.spins ?? 0,
-	dailyStreak: getDailyStreakStatus(wallet?.dailyStreak),
-	demoBalanceCents: wallet?.demoBalanceCents ?? 0,
-	demoActivities: (wallet?.demoActivities || []).slice(-10).reverse()
+	spins: wallet?.spins ?? 0
 });
 
 const issueToken = (user) => jwt.sign(
@@ -23,29 +19,10 @@ const issueToken = (user) => jwt.sign(
 	{ expiresIn: "12h" }
 );
 
-const DEFAULT_LOGIN_ACCOUNT = {
-	name: "Veloop Admin",
-	email: "admin@veloopwallet.com",
-	password: "Veloop@123"
-};
-
-const normalizeConfigValue = (value, fallback) => {
-	if (typeof value !== "string") {
-		return fallback;
-	}
-
-	const normalized = value.trim();
-	if (!normalized || normalized.startsWith("replace-with-")) {
-		return fallback;
-	}
-
-	return normalized;
-};
-
 const getConfiguredDefaultAccount = () => {
-	const email = normalizeConfigValue(process.env.DEFAULT_EMAIL, DEFAULT_LOGIN_ACCOUNT.email).toLowerCase();
-	const password = normalizeConfigValue(process.env.DEFAULT_PASSWORD, DEFAULT_LOGIN_ACCOUNT.password);
-	const name = normalizeConfigValue(process.env.DEFAULT_NAME, DEFAULT_LOGIN_ACCOUNT.name);
+	const email = typeof process.env.DEFAULT_EMAIL === "string" ? process.env.DEFAULT_EMAIL.trim().toLowerCase() : "";
+	const password = typeof process.env.DEFAULT_PASSWORD === "string" ? process.env.DEFAULT_PASSWORD : "";
+	const name = typeof process.env.DEFAULT_NAME === "string" ? process.env.DEFAULT_NAME.trim() : "Local Admin";
 
 	if (!email || !password) {
 		return null;
@@ -153,4 +130,4 @@ const currentUser = async (req, res) => {
 	});
 };
 
-module.exports = { register, login, currentUser, getConfiguredDefaultAccount };
+module.exports = { register, login, currentUser };

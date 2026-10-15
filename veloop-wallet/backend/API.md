@@ -23,17 +23,12 @@
 - A trusted risk/verification process can set a user's `requiresAdditionalVerification` flag. The withdrawal endpoint then returns `403` with an additional-verification message until the flag is cleared.
 - Payout options default to the supported methods below. An internal operator can persist a `PayoutOption` record with `active: false` to make that supported payout method unavailable.
 
-## Daily streak rewards
-
-The authenticated `GET /wallet` response includes the current streak, best streak, claim status, next reward, and seven-day reward schedule. `POST /wallet/daily-streak/claim` claims once per UTC calendar day. Consecutive days advance only when the previous claim was yesterday; a missed day restarts at day 1. Rewards repeat weekly (50, 75, 100, 125, 150, 200, then 300 VEs plus one spin) and never change the withdrawable USD balance. A duplicate same-day claim returns `409`.
-
 ## API requirements
 
 All paths below are mounted at the backend root; Vite exposes them under `/api`. Private endpoints require `Authorization: Bearer <token>`.
 
 | Method and path | Purpose | Request requirements |
 | --- | --- | --- |
-| `POST /wallet/daily-streak/claim` | Claim the daily non-cash streak reward | ******; once per UTC day |
 | `POST /auth/register` | Create account and empty wallet | `name`, valid `email`, password of at least 8 characters |
 | `POST /auth/login` | Start a session | `email`, `password` |
 | `GET /auth/me` | Read signed-in account and balance | Bearer token |
@@ -48,12 +43,6 @@ All paths below are mounted at the backend root; Vite exposes them under `/api`.
 `Idempotency-Key` must be 8-100 characters using letters, digits, `_`, `-`, `.`, or `:`. Repeating the same key and same operation returns the original result; reusing it with different operation data returns `409`.
 
 Collection and withdrawal methods currently supported: `bank_transfer`, `mobile_money`. Currency is currently USD only.
-
-## Demo-only wallet flows
-
-`GET /wallet/rewards` lists demo coin rewards and simulated wallet credit. `POST /wallet/rewards/:rewardId/redeem` requires an `Idempotency-Key`; redemptions affect only the demo catalog and never issue merchant vouchers. `POST /wallet/demo/payments` accepts `{ "amountCents": 2500, "method": "upi" }` or `"card"` and adds simulated funds to the separate demo balance. `POST /wallet/demo/withdrawals` accepts `{ "amountCents": 2500, "method": "upi" }` or `"bank_transfer"` and subtracts only demo funds. These authenticated and idempotent endpoints do not charge, transfer, or withdraw real money or modify the real USD balance/ledger.
-
-`GET /wallet/integrations` reports live-provider availability without exposing credentials. Amazon AGCOD, the provider-neutral voucher issuer, Razorpay Checkout, and RazorpayX Payouts are represented by server-side adapter interfaces but are disabled until approved provider accounts, required configuration, and adapters are available. Razorpay operations remain blocked until INR/paise wallet accounting is implemented. Feature switches are documented in `backend/.env.example`; switches alone cannot activate a missing provider adapter.
 
 ## Admin and internal control
 
